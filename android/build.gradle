@@ -1,0 +1,152 @@
+// The Android Gradle Plugin builds the native code with the Android NDK.
+
+group = "app.rive.rive_native"
+version = "1.0"
+
+buildscript {
+    ext.kotlin_version = "1.8.22"
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath("com.android.tools.build:gradle:8.7.0")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version")
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+apply plugin: "com.android.library"
+apply plugin: "kotlin-android"
+
+android {
+    if (project.android.hasProperty("namespace")) {
+        namespace = "app.rive.rive_native"
+    }
+
+    // Bumping the plugin compileSdk version requires all clients of this plugin
+    // to bump the version in their app.
+    compileSdk = 35
+
+    // Use the NDK version
+    // declared in /android/app/build.gradle file of the Flutter project.
+    // Replace it with a version number if this plugin requires a specific NDK version.
+    // (e.g. ndkVersion "23.1.7779620")
+    ndkVersion = android.ndkVersion
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+
+    kotlinOptions {
+        jvmTarget = JavaVersion.VERSION_11
+    }
+
+    sourceSets {
+        main.java.srcDirs += "src/main/kotlin"
+        test.java.srcDirs += "src/test/kotlin"
+    }
+
+    defaultConfig {
+        minSdk = 21
+    }
+}
+
+// Task to run rive_native setup before building
+tasks.register('runRiveNativeSetup', Exec) {
+    description = "Runs rive_native setup command to prepare native libraries"
+    group = "build"
+
+    // Allow users to skip setup with -Prive.native.skipSetup=true
+    // Also skip if prebuilt libraries already exist
+    onlyIf {
+        def skipByProperty = project.hasProperty("rive.native.skipSetup") && project.property("rive.native.skipSetup") == "true"
+        def hasPrebuiltLibs = fileTree("src/main/jniLibs").matching {
+            include "**/*.so"
+        }.files.size() > 0
+
+        !skipByProperty && !hasPrebuiltLibs
+    }
+
+    // Infer Flutter app root directory
+    // AAR plugins are built in .android/plugins_build_output/rive_native
+    // APK builds are in build/rive_native
+    def appRoot
+    def buildDir = project.layout.buildDirectory.get().asFile.absolutePath
+
+    // Try to infer from build directory path
+    def aarIndex = buildDir.indexOf(File.separator + ".android" + File.separator + "plugins_build_output" + File.separator + "rive_native")
+    def apkIndex = buildDir.indexOf(File.separator + "build" + File.separator + "rive_native")
+
+    if (aarIndex > -1) {
+        appRoot = new File(buildDir.substring(0, aarIndex))
+        logger.lifecycle("rive_native: Detected AAR build. Inferred app root: ${appRoot}")
+    } else if (apkIndex > -1) {
+        appRoot = new File(buildDir.substring(0, apkIndex))
+        logger.lifecycle("rive_native: Detected APK build. Inferred app root: ${appRoot}")
+    } else {
+        // Fallback: assume we're in a Flutter app and go up to find the app root
+        // This works when the plugin is used in a Flutter app
+        def currentDir = project.rootProject.projectDir
+        while (currentDir != null && !new File(currentDir, "pubspec.yaml").exists()) {
+            currentDir = currentDir.parentFile
+        }
+        if (currentDir != null) {
+            appRoot = currentDir
+            logger.lifecycle("rive_native: Inferred app root from pubspec.yaml: ${appRoot}")
+        } else {
+            throw new GradleException("rive_native: Could not infer app root directory")
+        }
+    }
+
+    workingDir = appRoot
+
+    def isWindows = System.getProperty("os.name").toLowerCase().contains("windows")
+
+    // Use shell to find and execute dart (shell has access to PATH)
+    if (isWindows) {
+        executable "cmd"
+        args "/C", "dart", "run", "rive_native:setup", "--verbose", "-p", "android"
+    } else {
+        executable "sh"
+        args "-c", "dart run rive_native:setup --verbose -p android"
+    }
+
+    doFirst {
+        logger.lifecycle("rive_native: Running setup command from: ${workingDir}")
+        if (isWindows) {
+            logger.lifecycle("rive_native: Using cmd to execute dart command")
+        } else {
+            logger.lifecycle("rive_native: Using sh to execute dart command")
+        }
+    }
+
+    doLast {
+        logger.lifecycle("rive_native: Setup command completed successfully")
+    }
+
+    // Ignore exit value to allow better error messages
+    ignoreExitValue = false
+}
+
+
+// Make preBuild and externalNativeBuild tasks depend on the setup task
+afterEvaluate {
+    // Hook into preBuild task (runs before all build tasks)
+    tasks.matching { it.name == "preBuild" }.configureEach {
+        dependsOn tasks.named('runRiveNativeSetup')
+    }
+    
+    // Hook into externalNativeBuild tasks (CMake/NDK builds)
+    tasks.matching { it.name.startsWith("externalNativeBuild") }.configureEach {
+        dependsOn tasks.named('runRiveNativeSetup')
+    }
+}

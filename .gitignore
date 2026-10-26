@@ -1,0 +1,7 @@
+# Downloaded by `dart run rive_native:setup` during the Gradle/Xcode build.
+# Keep them out of this fork so the repo stays a plain copy of the pub.dev
+# release plus our patches.
+android/src/main/jniLibs/
+**/rive_marker_*_setup_complete
+ios/rive_native/.swiftpm/
+.dart_tool/
